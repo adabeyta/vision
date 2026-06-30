@@ -165,11 +165,15 @@ STABLE_SOURCES = {
     CSRS_DIR / "ops/mps/nms_kernel.mm",
     CSRS_DIR / "ops/quantized/cpu/qnms_kernel.cpp",
     CSRS_DIR / "io/image/common_stable.cpp",
-    CSRS_DIR / "io/image/cuda/encode_jpegs_cuda.cpp",
 }
 STABLE_SOURCES.add(CSRS_DIR / ("ops/hip/nms_kernel.hip" if IS_ROCM else "ops/cuda/nms_kernel.cu"))
 STABLE_SOURCES.add(
     CSRS_DIR / ("io/image/hip/decode_jpegs_cuda.cpp" if IS_ROCM else "io/image/cuda/decode_jpegs_cuda.cpp")
+)
+# No ROCm jpeg encoder exists (nvJPEG is CUDA-only), so on ROCm this points at the
+# hipified stub; either way it is kept out of the legacy image extension.
+STABLE_SOURCES.add(
+    CSRS_DIR / ("io/image/hip/encode_jpegs_hip.cpp" if IS_ROCM else "io/image/cuda/encode_jpegs_cuda.cpp")
 )
 
 
@@ -394,8 +398,7 @@ def make_image_extension():
 
     if IS_ROCM:
         sources += _not_stable(image_dir.glob("hip/*.cpp"))
-        # we need to exclude this in favor of the hipified source
-        sources.remove(image_dir / "image.cpp")
+        # image.cpp is CPU-only now, so it isn't hipified; keep it to register the ops.
     else:
         sources += _not_stable(image_dir.glob("cuda/*.cpp"))
 
@@ -445,19 +448,8 @@ def make_image_extension():
         else:
             warnings.warn("Building torchvision without WEBP support")
 
-    # NVJPEG is needed here for the GPU JPEG *encoder*, not supported by ROCM.
-    if USE_NVJPEG and not IS_ROCM and (torch.cuda.is_available() or FORCE_CUDA):
-        nvjpeg_found = CUDA_HOME is not None and (Path(CUDA_HOME) / "include/nvjpeg.h").exists()
-
-        if nvjpeg_found:
-            print("Building torchvision with NVJPEG image support")
-            libraries.append("nvjpeg")
-            define_macros += [("NVJPEG_FOUND", 1)]
-            Extension = CUDAExtension
-        else:
-            warnings.warn("Building torchvision without NVJPEG support")
-    elif USE_NVJPEG and not IS_ROCM:
-        warnings.warn("Building torchvision without NVJPEG support")
+    # NVJPEG (GPU jpeg encoder/decoder) now lives entirely in image_stable, so the
+    # legacy image extension no longer needs to link it or build as a CUDAExtension.
 
     return Extension(
         name="torchvision.image",
