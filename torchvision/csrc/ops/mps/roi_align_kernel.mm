@@ -13,16 +13,6 @@
 
 #include "roi_align_metal_shader.h"
 
-// torch_mps_set_arg_bytes needs torch 2.14. Older targets ride the scalars in
-// as 1-element tensors. defined() keeps pre-2.14 headers, which lack the
-// constant, on the fallback.
-#if defined(TORCH_VERSION_2_14_0) && \
-    TORCH_FEATURE_VERSION >= TORCH_VERSION_2_14_0
-#define ROI_ALIGN_MPS_HAS_SET_ARG_BYTES 1
-#else
-#define ROI_ALIGN_MPS_HAS_SET_ARG_BYTES 0
-#endif
-
 namespace vision {
 namespace ops {
 
@@ -50,31 +40,18 @@ const char* metal_type_string(torch::headeronly::ScalarType scalar_type) {
   return "";
 }
 
-// From 2.14 the scalar args bind directly with torch_mps_set_arg_bytes, like
-// the unstable setBytes path. Below it they ride in as 1-element tensors. The
-// shader is indifferent.
-// TODO(stable-abi): drop the smuggle branches once TORCH_TARGET_VERSION moves
-// to 2.14+.
-#if ROI_ALIGN_MPS_HAS_SET_ARG_BYTES
-using ScaleArg = float;
-using AlignedArg = bool;
-#else
-using ScaleArg = AtenTensorHandle;
-using AlignedArg = AtenTensorHandle;
-#endif
-
 struct RoiAlignForwardLaunchArgs {
   AtenTensorHandle input;
   AtenTensorHandle rois;
   AtenTensorHandle output;
-  ScaleArg spatial_scale;
+  float spatial_scale;
   int64_t channels;
   int64_t height;
   int64_t width;
   int64_t pooled_height;
   int64_t pooled_width;
   int64_t sampling_ratio;
-  AlignedArg aligned;
+  bool aligned;
   uint64_t output_size;
 };
 
@@ -91,13 +68,8 @@ void roi_align_forward_encode(
       aoti_torch_mps_set_arg_tensor(func, 1, launch_args->rois));
   TORCH_ERROR_CODE_CHECK(
       aoti_torch_mps_set_arg_tensor(func, 2, launch_args->output));
-#if ROI_ALIGN_MPS_HAS_SET_ARG_BYTES
   TORCH_ERROR_CODE_CHECK(torch_mps_set_arg_bytes(
       func, 3, &launch_args->spatial_scale, sizeof(float)));
-#else
-  TORCH_ERROR_CODE_CHECK(
-      aoti_torch_mps_set_arg_tensor(func, 3, launch_args->spatial_scale));
-#endif
   TORCH_ERROR_CODE_CHECK(
       aoti_torch_mps_set_arg_int(func, 4, launch_args->channels));
   TORCH_ERROR_CODE_CHECK(
@@ -110,13 +82,8 @@ void roi_align_forward_encode(
       aoti_torch_mps_set_arg_int(func, 8, launch_args->pooled_width));
   TORCH_ERROR_CODE_CHECK(
       aoti_torch_mps_set_arg_int(func, 9, launch_args->sampling_ratio));
-#if ROI_ALIGN_MPS_HAS_SET_ARG_BYTES
   TORCH_ERROR_CODE_CHECK(
       torch_mps_set_arg_bytes(func, 10, &launch_args->aligned, sizeof(bool)));
-#else
-  TORCH_ERROR_CODE_CHECK(
-      aoti_torch_mps_set_arg_tensor(func, 10, launch_args->aligned));
-#endif
   TORCH_ERROR_CODE_CHECK(
       aoti_torch_mps_dispatch_single(func, launch_args->output_size));
 }
@@ -132,8 +99,8 @@ struct RoiAlignBackwardLaunchArgs {
   int64_t pooled_height;
   int64_t pooled_width;
   int64_t sampling_ratio;
-  AlignedArg aligned;
-  ScaleArg spatial_scale;
+  bool aligned;
+  float spatial_scale;
   int64_t n_stride;
   int64_t c_stride;
   int64_t h_stride;
@@ -167,17 +134,10 @@ void roi_align_backward_encode(
       aoti_torch_mps_set_arg_int(func, 8, launch_args->pooled_width));
   TORCH_ERROR_CODE_CHECK(
       aoti_torch_mps_set_arg_int(func, 9, launch_args->sampling_ratio));
-#if ROI_ALIGN_MPS_HAS_SET_ARG_BYTES
   TORCH_ERROR_CODE_CHECK(
       torch_mps_set_arg_bytes(func, 10, &launch_args->aligned, sizeof(bool)));
   TORCH_ERROR_CODE_CHECK(torch_mps_set_arg_bytes(
       func, 11, &launch_args->spatial_scale, sizeof(float)));
-#else
-  TORCH_ERROR_CODE_CHECK(
-      aoti_torch_mps_set_arg_tensor(func, 10, launch_args->aligned));
-  TORCH_ERROR_CODE_CHECK(
-      aoti_torch_mps_set_arg_tensor(func, 11, launch_args->spatial_scale));
-#endif
   TORCH_ERROR_CODE_CHECK(
       aoti_torch_mps_set_arg_int(func, 12, launch_args->n_stride));
   TORCH_ERROR_CODE_CHECK(
@@ -231,21 +191,7 @@ Tensor roi_align_forward_kernel(
   auto input_ = torch::stable::contiguous(input);
   auto rois_ = torch::stable::contiguous(rois);
 
-#if ROI_ALIGN_MPS_HAS_SET_ARG_BYTES
-  ScaleArg spatial_scale_arg = static_cast<float>(spatial_scale);
-  AlignedArg aligned_arg = aligned;
-#else
-  // TODO(stable-abi): drop once TORCH_TARGET_VERSION moves to 2.14+ and the
-  // scalars bind directly with torch_mps_set_arg_bytes.
-  Tensor spatial_scale_t = torch::stable::new_empty(
-      input, {1}, torch::headeronly::ScalarType::Float);
-  torch::stable::fill_(spatial_scale_t, spatial_scale);
-  Tensor aligned_t = torch::stable::new_empty(
-      input, {1}, torch::headeronly::ScalarType::Bool);
-  torch::stable::fill_(aligned_t, aligned ? 1.0 : 0.0);
-  ScaleArg spatial_scale_arg = spatial_scale_t.get();
-  AlignedArg aligned_arg = aligned_t.get();
-#endif
+  float spatial_scale_f = static_cast<float>(spatial_scale);
 
   const std::string kernel =
       "roi_align_" + std::string(metal_type_string(input.scalar_type()));
@@ -257,14 +203,14 @@ Tensor roi_align_forward_kernel(
       input_.get(),
       rois_.get(),
       output.get(),
-      spatial_scale_arg,
+      spatial_scale_f,
       channels,
       height,
       width,
       pooled_height,
       pooled_width,
       sampling_ratio,
-      aligned_arg,
+      aligned,
       static_cast<uint64_t>(output_size)};
   TORCH_ERROR_CODE_CHECK(aoti_torch_mps_run_command_block(
       func, &roi_align_forward_encode, &launch_args));
@@ -314,21 +260,7 @@ Tensor roi_align_backward_kernel(
 
   auto rois_ = torch::stable::contiguous(rois);
 
-#if ROI_ALIGN_MPS_HAS_SET_ARG_BYTES
-  ScaleArg spatial_scale_arg = static_cast<float>(spatial_scale);
-  AlignedArg aligned_arg = aligned;
-#else
-  // TODO(stable-abi): drop once TORCH_TARGET_VERSION moves to 2.14+ and the
-  // scalars bind directly with torch_mps_set_arg_bytes.
-  Tensor spatial_scale_t = torch::stable::new_empty(
-      grad, {1}, torch::headeronly::ScalarType::Float);
-  torch::stable::fill_(spatial_scale_t, spatial_scale);
-  Tensor aligned_t = torch::stable::new_empty(
-      grad, {1}, torch::headeronly::ScalarType::Bool);
-  torch::stable::fill_(aligned_t, aligned ? 1.0 : 0.0);
-  ScaleArg spatial_scale_arg = spatial_scale_t.get();
-  AlignedArg aligned_arg = aligned_t.get();
-#endif
+  float spatial_scale_f = static_cast<float>(spatial_scale);
 
   const std::string kernel = "roi_align_backward_" +
       std::string(metal_type_string(grad.scalar_type()));
@@ -347,8 +279,8 @@ Tensor roi_align_backward_kernel(
       pooled_height,
       pooled_width,
       sampling_ratio,
-      aligned_arg,
-      spatial_scale_arg,
+      aligned,
+      spatial_scale_f,
       n_stride,
       c_stride,
       h_stride,

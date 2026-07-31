@@ -153,7 +153,7 @@ def get_macros_and_flags():
     return define_macros, extra_compile_args
 
 
-TORCH_TARGET_VERSION = "0x020b000000000000"
+TORCH_TARGET_VERSION = "0x020e000000000000"
 
 # Files migrated to the stable ABI: subtracted from make_C_extension()'s globs and
 # built into _C_stable instead. Add an op's files here as it migrates.
@@ -260,6 +260,8 @@ def get_stable_macros_and_flags():
             # The jpeg decode .cpp also calls these shims (incl.
             # torch_get_cuda_stream_from_pool), so cxx needs USE_CUDA too.
             extra_compile_args["cxx"].append("-DUSE_CUDA")
+    if torch.backends.mps.is_available() or FORCE_MPS:
+        extra_compile_args["cxx"].append("-DUSE_MPS")
     return define_macros, extra_compile_args
 
 
