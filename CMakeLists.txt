@@ -109,6 +109,7 @@ set(TORCHVISION_STABLE_SOURCES
   ${TVCPP}/ops/cpu/roi_align_kernel.cpp
   ${TVCPP}/ops/ps_roi_pool.cpp
   ${TVCPP}/ops/cpu/ps_roi_pool_kernel.cpp
+  ${TVCPP}/ops/cuda/ps_roi_pool_kernel.cu
   ${TVCPP}/io/image/cuda/decode_jpegs_cuda.cpp
   ${TVCPP}/io/image/cuda/encode_jpegs_cuda.cpp
   ${TVCPP}/io/image/cpu/encode_png.cpp
