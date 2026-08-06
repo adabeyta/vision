@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <torch/csrc/inductor/aoti_torch/generated/c_shim_cpu.h>
 #include <torch/csrc/stable/c/shim.h>
 #include <torch/csrc/stable/stableivalue_conversions.h>
 #include <torch/csrc/stable/tensor.h>
@@ -28,7 +29,8 @@
 // an ATen call with no stable wrapper. Each is a thin shim -- delete it once an
 // upstream torch::stable wrapper lands.
 // TODO(stable-abi): upstream torch::stable wrappers for sort / index_select /
-// masked_select so these helpers can be removed.
+// masked_select / add / addmm_ / mul / ones_like / permute / zeros_like so
+// these helpers can be removed.
 
 namespace vision {
 namespace ops {
@@ -76,6 +78,83 @@ inline Tensor masked_select(const Tensor& self, const Tensor& mask) {
       torch::stable::detail::from(self), torch::stable::detail::from(mask)};
   TORCH_ERROR_CODE_CHECK(torch_call_dispatcher(
       "aten::masked_select", "", stack.data(), TORCH_ABI_VERSION));
+  return torch::stable::detail::to<Tensor>(stack[0]);
+}
+
+// aten::add.Tensor(Tensor self, Tensor other, *, Scalar alpha=1) -> Tensor
+// Scalar args cannot cross torch_call_dispatcher so this uses a typed C shim
+// like torch::stable::subtract does.
+inline Tensor add(const Tensor& self, const Tensor& other, double alpha = 1.0) {
+  AtenTensorHandle ret0 = nullptr;
+  TORCH_ERROR_CODE_CHECK(
+      aoti_torch_cpu_add_Tensor(self.get(), other.get(), alpha, &ret0));
+  return Tensor(ret0);
+}
+
+// aten::addmm_(Tensor(a!) self, Tensor mat1, Tensor mat2, *, Scalar beta=1,
+//     Scalar alpha=1) -> Tensor(a!)
+// Scalar args cannot cross torch_call_dispatcher so this uses the addmm.out
+// C shim with out aliasing self.
+inline Tensor addmm_(
+    const Tensor& self,
+    const Tensor& mat1,
+    const Tensor& mat2,
+    double beta = 1.0,
+    double alpha = 1.0) {
+  TORCH_ERROR_CODE_CHECK(aoti_torch_cpu_addmm_out(
+      self.get(), self.get(), mat1.get(), mat2.get(), beta, alpha));
+  return self;
+}
+
+// aten::mul.Tensor(Tensor self, Tensor other) -> Tensor
+inline Tensor mul(const Tensor& self, const Tensor& other) {
+  std::array<StableIValue, 2> stack{
+      torch::stable::detail::from(self), torch::stable::detail::from(other)};
+  TORCH_ERROR_CODE_CHECK(torch_call_dispatcher(
+      "aten::mul", "Tensor", stack.data(), TORCH_ABI_VERSION));
+  return torch::stable::detail::to<Tensor>(stack[0]);
+}
+
+// aten::ones_like(Tensor self, *, ScalarType? dtype=None, Layout? layout=None,
+//     Device? device=None, bool? pin_memory=None,
+//     MemoryFormat? memory_format=None) -> Tensor
+inline Tensor ones_like(const Tensor& self) {
+  std::array<StableIValue, 6> stack{
+      torch::stable::detail::from(self),
+      torch::stable::detail::from(std::nullopt),
+      torch::stable::detail::from(std::nullopt),
+      torch::stable::detail::from(std::nullopt),
+      torch::stable::detail::from(std::nullopt),
+      torch::stable::detail::from(std::nullopt)};
+  TORCH_ERROR_CODE_CHECK(torch_call_dispatcher(
+      "aten::ones_like", "", stack.data(), TORCH_ABI_VERSION));
+  return torch::stable::detail::to<Tensor>(stack[0]);
+}
+
+// aten::permute(Tensor(a) self, int[] dims) -> Tensor(a)
+inline Tensor permute(
+    const Tensor& self,
+    torch::headeronly::IntHeaderOnlyArrayRef dims) {
+  std::array<StableIValue, 2> stack{
+      torch::stable::detail::from(self), torch::stable::detail::from(dims)};
+  TORCH_ERROR_CODE_CHECK(torch_call_dispatcher(
+      "aten::permute", "", stack.data(), TORCH_ABI_VERSION));
+  return torch::stable::detail::to<Tensor>(stack[0]);
+}
+
+// aten::zeros_like(Tensor self, *, ScalarType? dtype=None, Layout? layout=None,
+//     Device? device=None, bool? pin_memory=None,
+//     MemoryFormat? memory_format=None) -> Tensor
+inline Tensor zeros_like(const Tensor& self) {
+  std::array<StableIValue, 6> stack{
+      torch::stable::detail::from(self),
+      torch::stable::detail::from(std::nullopt),
+      torch::stable::detail::from(std::nullopt),
+      torch::stable::detail::from(std::nullopt),
+      torch::stable::detail::from(std::nullopt),
+      torch::stable::detail::from(std::nullopt)};
+  TORCH_ERROR_CODE_CHECK(torch_call_dispatcher(
+      "aten::zeros_like", "", stack.data(), TORCH_ABI_VERSION));
   return torch::stable::detail::to<Tensor>(stack[0]);
 }
 
