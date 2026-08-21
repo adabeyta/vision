@@ -1,12 +1,27 @@
-#include <ATen/native/mps/OperationUtils.h>
+#pragma once
+
+// Metal shader source shared by every stable ABI MPS op, together with the
+// shader library singleton and the kernel lookup the ops use to reach it.
+// This replaces the per op *_metal_shader.h carve outs and the legacy
+// mps_kernels.h, whose shader source is carried here unchanged.
+// mps_kernels.h opened with #include <ATen/native/mps/OperationUtils.h> and
+// instantiated at::native::mps::MetalShaderLibrary, both unavailable under
+// -DTORCH_TARGET_VERSION, so the source is a plain string handed to
+// aoti_torch_mps_create_shader_library at runtime, the same shape PyTorch's
+// AOTInductor MPS backend emits.
+
+#include <torch/csrc/inductor/aoti_torch/c/shim_mps.h>
+#include <torch/headeronly/core/ScalarType.h>
+#include <torch/headeronly/util/shim_utils.h>
+
+#include <string>
 
 namespace vision {
 namespace ops {
 
 namespace mps {
 
-// TODO(stable-abi): drop this header once every MPS op has moved.
-static at::native::mps::MetalShaderLibrary lib(R"VISION_METAL(
+inline constexpr char metal_shaders[] = R"VISION_METAL(
 
 #include <metal_atomic>
 #include <metal_stdlib>
@@ -1184,14 +1199,46 @@ REGISTER_PS_ROI_POOL_OP(half, int64_t);
 REGISTER_PS_ROI_POOL_BACKWARD_OP(float, int64_t);
 REGISTER_PS_ROI_POOL_BACKWARD_OP(half, int64_t);
 
-)VISION_METAL");
+)VISION_METAL";
 
-static id<MTLComputePipelineState> visionPipelineState(
-    id<MTLDevice> device,
+// Lazily compile the shader library once for the process, mirroring the
+// lazy singleton the AOTInductor MPS backend generates. The handle lives for
+// the process lifetime, as the legacy static MetalShaderLibrary did.
+inline AOTIMetalShaderLibraryHandle shaderLibrary() {
+  static AOTIMetalShaderLibraryHandle library = []() {
+    AOTIMetalShaderLibraryHandle handle = nullptr;
+    TORCH_ERROR_CODE_CHECK(
+        aoti_torch_mps_create_shader_library(metal_shaders, &handle));
+    return handle;
+  }();
+  return library;
+}
+
+// Mirrors at::native::mps::scalarToMetalTypeString for the dtypes the vision
+// kernels register. An unsupported dtype yields a name with no matching
+// kernel, so the lookup in visionKernelFunction fails, as the legacy
+// visionPipelineState lookup did for unsupported types.
+inline const char* metal_type_string(
+    torch::headeronly::ScalarType scalar_type) {
+  if (scalar_type == torch::headeronly::ScalarType::Float) {
+    return "float";
+  }
+  if (scalar_type == torch::headeronly::ScalarType::Half) {
+    return "half";
+  }
+  return "";
+}
+
+// Stable ABI counterpart of the legacy visionPipelineState in mps_kernels.h.
+inline AOTIMetalKernelFunctionHandle visionKernelFunction(
     const std::string& kernel) {
-  return lib.getPipelineStateForFunc(kernel);
+  AOTIMetalKernelFunctionHandle func = nullptr;
+  TORCH_ERROR_CODE_CHECK(aoti_torch_mps_get_kernel_function(
+      shaderLibrary(), kernel.c_str(), &func));
+  return func;
 }
 
 } // namespace mps
+
 } // namespace ops
 } // namespace vision
