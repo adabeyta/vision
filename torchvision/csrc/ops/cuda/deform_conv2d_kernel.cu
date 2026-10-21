@@ -97,9 +97,14 @@ using torch::stable::Tensor;
 
 const int kMaxParallelImgs = 32;
 
-// TODO(stable-abi): use torch::stable::add once it is added to the stable ABI.
+// TODO(stable-abi): remove this helper once the minimum target is PyTorch 2.16.
 Tensor add_tensors(const Tensor& self, const Tensor& other) {
+#if defined(TORCH_VERSION_2_16_0) && \
+    TORCH_FEATURE_VERSION >= TORCH_VERSION_2_16_0
+  return torch::stable::add(self, other);
+#else
   return torch::stable::subtract(self, other, -1.0);
+#endif
 }
 
 inline unsigned int GET_THREADS() {
