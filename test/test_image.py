@@ -1004,12 +1004,17 @@ def test_decode_webp_grayscale(decode_fun):
     #
     # torch surfaces the C++ warning as a Python warning, see
     # https://github.com/pytorch/pytorch/pull/193451.
-    with pytest.warns(UserWarning, match="Webp does not support grayscale conversions"):
-        img = decode_fun(encoded_bytes, mode=ImageReadMode.GRAY)
+    warn_always = torch.is_warn_always_enabled()
+    try:
+        torch.set_warn_always(True)
+        with pytest.warns(UserWarning, match="Webp does not support grayscale conversions"):
+            img = decode_fun(encoded_bytes, mode=ImageReadMode.GRAY)
 
-        # Note that because we do not support grayscale conversions, we expect
-        # that the number of color channels is still 3.
-        assert img.shape == (3, 100, 100)
+            # Note that because we do not support grayscale conversions, we expect
+            # that the number of color channels is still 3.
+            assert img.shape == (3, 100, 100)
+    finally:
+        torch.set_warn_always(warn_always)
 
 
 # This test is skipped by default because it requires webp images that we're not
